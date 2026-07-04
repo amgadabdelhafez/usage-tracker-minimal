@@ -1,99 +1,252 @@
-# usage-tracker (minimal)
+# Usage Tracker
 
-Trimmed-down AI coding tool usage tracker for **three providers — Claude, Codex, Cursor** — serving only what the `UsageMenuBar` macOS app needs.
+Usage Tracker is a local macOS menu bar app and backend for watching AI coding
+tool usage across Claude, Codex, and Cursor. It combines local activity scans
+with optional subscription quota scraping so the menu bar can show current
+usage, model breakdowns, weekly pacing, and quota risk without opening each
+provider dashboard.
 
-## Data flow
+The app is designed to run on your machine:
 
-```
-collector.py (launchd, 60s)
-  ├─ scans ~/.claude/projects/*.jsonl  (Claude Code CLI messages/tokens)
-  ├─ scans Claude desktop-app session JSONL (Cowork), same format
-  ├─ scans ~/.codex/state_5.sqlite + ~/.codex/sessions/*.jsonl
-  └─ [subscription access only] scrapes claude/codex/cursor web usage
-     (PTY/tmux or cookie-based web, every 5 min)
-        ↓ POST /cc/report
-API (uvicorn, 127.0.0.1:8000)
-  └─ stores snapshots in claude_usage.db (sqlite, optional Turso sync)
-        ↓
-Swift menubar app polls GET /stats + GET /budget/weekly,
-and POSTs /sentinel/report to refresh provider cookies.
-```
+- A Python collector scans local Claude and Codex activity every minute.
+- Optional subscription access scraping refreshes Claude, Codex, and Cursor
+  quota gauges every five minutes.
+- A FastAPI server stores snapshots in SQLite and serves the menu bar contract.
+- A Swift menu bar app polls the local API and refreshes provider cookies.
+
+## What It Tracks
+
+Claude:
+
+- Claude Code CLI JSONL under `~/.claude/projects`
+- Claude desktop/Cowork local-agent session JSONL
+- Tokens, messages, active hours, model usage, session quota, weekly quota
+
+Codex:
+
+- Local Codex SQLite and session JSONL under `~/.codex`
+- Threads, sessions, tokens, model usage, session quota, weekly quota
+
+Cursor:
+
+- Subscription usage from Cursor's web/API surface
+- Requests, limits, reset state, and model breakdown when available
 
 ## Access Modes
 
-The quota scraping (session/weekly percentages) only exists for subscription
-access, where Claude/Codex/Cursor expose quota pages in the logged-in product.
-If Claude/Codex run through **Bedrock, Vertex, OpenAI enterprise, or any
-API-key setup**, run the collector with API-based access:
+The collector has two access modes:
+
+| Mode | Use When | Behavior |
+|---|---|---|
+| `subscription` | You use Claude/Codex/Cursor logged-in subscription plans. | Local scans plus web/PTY quota scraping. |
+| `api` | You use Bedrock, Vertex, OpenAI enterprise, or API-key based access. | Local scans only; no web/PTY quota scraping. |
+
+Run one collector cycle with:
 
 ```bash
-python3 -m src.collector --access api             # scans only, no web/PTY scraping
-python3 -m src.collector --access subscription    # default: scans + quota scrapes
-export USAGE_TRACKER_ACCESS=api                   # or set the default via env (.env works)
+python3 -m src.collector --access subscription
+python3 -m src.collector --access api
 ```
 
-With API-based access all token, model, message, and active-hours stats keep
-working (they come from local JSONL/SQLite); quota gauges stay empty unless
-self-imposed quotas are configured. To make launchd use it, add
-`export USAGE_TRACKER_ACCESS=api` to `.env`.
+`subscription` is the default. Old values `--mode full` and `--mode local`
+still work as compatibility aliases, but new installs should use
+`--access subscription` or `--access api`.
 
-Compatibility: old installs using `USAGE_TRACKER_MODE=full|local` or
-`--mode full|local` still work. The canonical names are now
-`subscription` and `api`.
+## Requirements
 
-### Self-imposed quotas
+- macOS 14 or newer for the Swift menu bar app
+- Python 3.11 or newer
+- Swift 5.9 or newer
+- Homebrew-style paths if you use the included launchd plists:
+  `/opt/homebrew/bin/python3` and `/opt/homebrew/bin/uvicorn`
 
-To get session/weekly gauges without subscription scraping, configure
-`[claude.self_quota]` / `[codex.self_quota]` in `~/.usage-tracker/plans.toml`
-(see the commented blocks in `plans.example.toml`, including approximate
-subscription limits to mirror). Caps can be token-based or cost-based
-(cost uses the API pricing table in `src/plan_config.py`, overridable per
-model prefix). Usage is measured from the same local session files the
-scanners read, over rolling windows (default 5h / 7d), cached 5 min.
-Scraped subscription quota always wins while live; self-quota fills in
-when scraping is off or stale. When active, `claude_quota`/`codex_quota`
-in `/stats` carry `"source": "self_quota"` plus measurement detail.
+If your Python or `uvicorn` live elsewhere, edit the plist files in `launchd/`
+before loading them.
 
-## Endpoints
+## Install
+
+Clone the repo:
+
+```bash
+git clone https://github.com/amgadabdelhafez/usage-tracker-minimal.git
+cd usage-tracker-minimal
+```
+
+Install backend dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Create local state folders:
+
+```bash
+mkdir -p ~/.usage-tracker/logs
+```
+
+Create a bearer secret and write both config files:
+
+```bash
+SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+
+cat > .env <<EOF
+export USAGE_TRACKER_SECRET=$SECRET
+export USAGE_TRACKER_ACCESS=subscription
+EOF
+
+cat > ~/.usage-tracker/config <<EOF
+USAGE_TRACKER_SECRET=$SECRET
+EOF
+```
+
+Use `USAGE_TRACKER_ACCESS=api` instead if you do not want subscription quota
+scraping.
+
+Optional: copy and edit the plan config:
+
+```bash
+cp plans.example.toml ~/.usage-tracker/plans.toml
+```
+
+`plans.toml` is used for weekly budget forecasts and self-imposed quotas.
+
+Build the menu bar app:
+
+```bash
+cd UsageMenuBar
+swift build -c release
+cd ..
+```
+
+## Run Manually
+
+Start the API:
+
+```bash
+set -a
+source .env
+set +a
+uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+In another shell, run one collector cycle:
+
+```bash
+set -a
+source .env
+set +a
+python3 -m src.collector --access subscription
+```
+
+Launch the menu bar app:
+
+```bash
+./UsageMenuBar/.build/arm64-apple-macosx/release/UsageMenuBar
+```
+
+The menu bar app polls `http://localhost:8000/stats` and
+`http://localhost:8000/budget/weekly` using the bearer token from
+`~/.usage-tracker/config`.
+
+## Run With launchd
+
+The included plists are configured for this checkout path:
+
+```text
+/Users/amgad/dev_projects/usage-tracker-minimal
+```
+
+If your checkout is somewhere else, edit the paths in `launchd/*.plist` first.
+
+Install and start the jobs:
+
+```bash
+cp launchd/*.plist ~/Library/LaunchAgents/
+
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amgad.usage-tracker.api.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amgad.cc-collector.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.usage-tracker.menubar.plist
+```
+
+Restart a job after changes:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amgad.usage-tracker.api.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amgad.usage-tracker.api.plist
+```
+
+Logs:
+
+- API: `~/.usage-tracker/logs/api.log` and `~/.usage-tracker/logs/api.err.log`
+- Collector: `~/.usage-tracker/logs/collector.log` and
+  `~/.usage-tracker/logs/collector.err.log`
+- Menu bar app: `/tmp/usage-menubar.log` and `/tmp/usage-menubar.err`
+
+## Self-Imposed Quotas
+
+Subscription quota gauges come from provider dashboards. API-based setups do
+not have those dashboards, so you can define local caps in
+`~/.usage-tracker/plans.toml`:
+
+```toml
+[claude.self_quota]
+window_hours = 5
+weekly_days = 7
+session_cap_tokens = 44_000_000
+weekly_cap_tokens = 300_000_000
+
+[codex.self_quota]
+window_hours = 5
+weekly_days = 7
+session_cap_usd = 10.0
+weekly_cap_usd = 75.0
+```
+
+Claude self-quota usage is measured from Claude JSONL. Codex self-quota usage
+is measured from Codex session JSONL. Caps can be token-based or cost-based,
+and pricing can be overridden per model prefix in `plans.toml`.
+
+Scraped subscription quota wins while it is live. Self-imposed quota fills in
+when scraping is off or stale.
+
+## API
+
+All endpoints except `/health` require:
+
+```text
+Authorization: Bearer $USAGE_TRACKER_SECRET
+```
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/stats` | GET | Menubar payload (quota, pacing, today's activity, gap rollups). Cached 15s. |
-| `/budget/weekly` | GET | Day-by-day weekly forecast per provider (needs `plans.toml`). |
-| `/cc/report` | POST | Collector ingest (usage samples + provider snapshots). |
-| `/sentinel/report` | POST | Cookie refresh from the menubar sentinel (claude/codex/cursor). |
-| `/health` | GET | Liveness (no auth). |
+| `/health` | GET | Liveness probe |
+| `/stats` | GET | Menu bar payload, cached for 15 seconds |
+| `/budget/weekly` | GET | Weekly forecast from `plans.toml` |
+| `/cc/report` | POST | Collector ingest |
+| `/sentinel/report` | POST | Cookie refresh from the menu bar sentinel |
 
-All except `/health` require `Authorization: Bearer $USAGE_TRACKER_SECRET`.
+## Development
 
-## Run
-
-```bash
-cd usage-tracker-minimal
-pip install -r requirements.txt
-export USAGE_TRACKER_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-uvicorn src.api:app --host 127.0.0.1 --port 8000   # API
-python3 -m src.collector                            # one collector cycle
-```
-
-For always-on operation, install the plists in `launchd/` (`launchctl load ~/Library/LaunchAgents/...`) — they source `.env` and run with `WorkingDirectory` set to this folder.
-
-## Config
-
-- **`~/.usage-tracker/plans.toml`** — provider plans/caps/costs; see `plans.example.toml`. Needed for `/budget/weekly`. Cached 60s.
-- **`.env`** (this folder, sourced by launchd):
-  - `USAGE_TRACKER_SECRET` — API bearer secret (required)
-  - `USAGE_TRACKER_ACCESS` — `subscription` (default) | `api` (no quota scraping; Bedrock/Vertex/enterprise/API key)
-  - `CLAUDE_USAGE_SOURCE` — `auto` | `web` | `tmux`
-  - `CLAUDE_WEB_COOKIE_FILE`, `CLAUDE_WEB_HEADERS_FILE`, `CLAUDE_WEB_ORG_ID` — Claude web usage scrape
-  - `CODEX_WEB_COOKIE_FILE`, `CODEX_WEB_USAGE_URL`, `CODEX_WEB_ANALYTICS_URL` — Codex web scrape
-  - `CURSOR_WEB_COOKIE_FILE`, `CURSOR_WEB_USAGE_URL` — Cursor web scrape
-  - `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` — optional remote DB sync
-
-  Cookie files are rewritten automatically by `/sentinel/report`.
-
-## Tests
+Run backend tests:
 
 ```bash
-cd usage-tracker-minimal && python3 -m pytest tests/ -q
+python3 -m pytest tests/ -q
 ```
+
+Build the Swift app:
+
+```bash
+cd UsageMenuBar
+swift build -c release
+```
+
+Useful checks before publishing changes:
+
+```bash
+python3 -m src.collector --help
+python3 -m pytest tests/ -q
+cd UsageMenuBar && swift build -c release
+```
+
+Generated files such as `.env`, `claude_usage.db`, `__pycache__`, pytest
+caches, and Swift `.build` output are intentionally ignored.

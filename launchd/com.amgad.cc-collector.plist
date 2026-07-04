@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.amgad.cc-collector</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>[ -f /Users/amgad/dev_projects/usage-tracker-minimal/.env ] &amp;&amp; source /Users/amgad/dev_projects/usage-tracker-minimal/.env; exec /opt/homebrew/bin/python3 -m src.collector</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/amgad/dev_projects/usage-tracker-minimal</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/amgad/.usage-tracker/logs/collector.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/amgad/.usage-tracker/logs/collector.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,83 @@
+# plans.example.toml — Copy to ~/.usage-tracker/plans.toml and adjust values.
+#
+# Each provider defines caps in its native units. The only cross-provider
+# field is cost_usd_month, used to compute weighted overall utilization.
+# Omit cap fields you don't know — the system falls back to percentage-only.
+
+[claude]
+plan = "Max (5x)"
+cost_usd_month = 100
+session_window_hours = 5
+session_cap_output_tokens = 234_000
+weekly_cap_output_tokens = 2_500_000
+
+# ── Self-imposed quota (API-based access) ─────────────────────────────
+# For Bedrock, Vertex, enterprise, or API-key access there is no
+# subscription quota page to scrape, so the session/weekly gauges stay
+# empty. Uncomment [claude.self_quota] to compute them locally against
+# caps you set yourself — by tokens or by cost. Token counts include
+# input + output + cache. Scraped subscription quota always wins when
+# it's live; self-quota kicks in when scraping is off
+# (collector --access api) or stale.
+#
+# [claude.self_quota]
+# window_hours = 5                    # rolling "session" window
+# weekly_days = 7                     # rolling "weekly" window
+# session_cap_tokens = 44_000_000
+# weekly_cap_tokens = 300_000_000
+# --- or cost-based caps (uses the API pricing table below): ---
+# session_cap_usd = 35.0
+# weekly_cap_usd = 250.0
+#
+# Reference — approximate subscription limits to mirror (community-measured,
+# all-token volumes; Anthropic doesn't publish exact numbers — treat as
+# starting points and tune against your own observed lockouts):
+#   Pro     ($20):  ~ 9M tokens / 5h session,   ~ 60M / week
+#   Max 5x  ($100): ~44M tokens / 5h session,   ~300M / week
+#   Max 20x ($200): ~176M tokens / 5h session,  ~1.2B / week
+# Cost equivalents at API list prices (blended; cache-heavy usage is much
+# cheaper per token): Pro ≈ $7/5h, Max5 ≈ $35/5h, Max20 ≈ $140/5h.
+#
+# Per-model pricing overrides for cost-based caps (USD per Mtok; defaults
+# live in src/plan_config.py MODEL_COSTS, longest prefix wins):
+# [claude.self_quota.pricing."claude-fable"]
+# input = 15.0
+# output = 75.0
+# cache_read = 1.5
+# cache_write = 18.75
+
+[codex]
+plan = "Plus"            # Plus ($20), Pro ($200), or Team
+cost_usd_month = 20
+session_window_hours = 5
+session_cap_output_tokens = 1_500_000
+# weekly_cap_output_tokens = TBD  # derive from observation
+
+# Self-imposed quota for API-based Codex access.
+# Same semantics as [claude.self_quota]; usage measured from
+# ~/.codex/sessions JSONL (input + output + reasoning + cached).
+#
+# [codex.self_quota]
+# window_hours = 5
+# weekly_days = 7
+# session_cap_tokens = 8_000_000
+# weekly_cap_tokens = 60_000_000
+# --- or cost-based: ---
+# session_cap_usd = 10.0
+# weekly_cap_usd = 75.0
+#
+# Reference — approximate subscription limits (community-measured):
+#   Plus ($20):  ~30-150 messages / 5h;  weekly cap ≈ 8-10x the 5h cap
+#   Pro  ($200): effectively ~10x Plus
+#
+# [codex.self_quota.pricing."gpt-5"]
+# input = 1.25
+# output = 10.0
+# cache_read = 0.125
+# cache_write = 1.25
+
+[cursor]
+plan = "Free"
+cost_usd_month = 0
+# Cursor self-quota is intentionally skipped; its limits come from the
+# scraped subscription dashboard.

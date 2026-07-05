@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -106,6 +107,31 @@ class TestStatsEndpoint:
         assert registry_ids == EXPECTED_PROVIDERS
         assert set(data["providers_latest"].keys()) == EXPECTED_PROVIDERS
         assert data["providers_latest"]["claude"]["status"] in {"stale", "partial", "ok", "error"}
+
+    def test_claude_past_time_only_session_reset_is_unknown(self, client):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 7, 5, 14, 29)
+                return value.replace(tzinfo=tz) if tz else value
+
+        db.insert(
+            87,
+            59,
+            0,
+            ts=int(time.time()) - 60,
+            session_reset="2:20pm",
+            weekly_reset="Jul 6 at 5:59pm",
+        )
+
+        with patch.object(api_module, "datetime", FixedDateTime):
+            r = client.get("/stats", headers=AUTH)
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["cc_session_hours_left"] is None
+        assert data["claude_quota"]["session_reset"] is None
+        assert data["claude_quota"]["weekly_reset"] == "Jul 6 5:59 PM"
 
     def test_stats_exposes_normalized_codex_contract(self, client, seeded_db):
         db.insert_codex(80, 25, "Apr 10", session_remaining_pct=90, session_reset="Apr 9 3:00 PM", ts=1000)

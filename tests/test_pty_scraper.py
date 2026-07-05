@@ -87,12 +87,26 @@ class TestScrapeClaudeUsage:
         result = _parse_claude_usage_text(pane_output)
         assert result is not None
         assert result["session_pct"] == 45
+        assert result["session_reset"] == "in 3 hr 11 min"
         assert result["weekly_pct"] == 30
         assert result["weekly_sonnet_pct"] == 12
         assert result["weekly_design_pct"] == 5
         assert result["extra_pct"] == 10
         assert result["extra_spent_usd"] == 1.5
         assert result["extra_limit_usd"] == 10.0
+
+    def test_relative_session_reset_text_is_preserved(self):
+        pane_output = """
+        Current session: 45% used
+        Resets in 4 hr 52 min
+
+        Current week (all models): 30% used
+        Resets Jul 6 at 5:59pm
+        """
+
+        result = _parse_claude_usage_text(pane_output)
+
+        assert result["session_reset"] == "in 4 hr 52 min"
 
     def test_partial_output_ignored(self):
         partial_output = """

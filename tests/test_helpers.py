@@ -6,11 +6,40 @@ os.environ.setdefault("USAGE_TRACKER_SECRET", "test-secret")
 
 import pytest
 from datetime import datetime
-from src.api import normalize_reset, compute_risk_outlook
+from src.api import (
+    compute_risk_outlook,
+    normalize_claude_session_reset,
+    normalize_reset,
+    parse_claude_session_hours_left,
+    parse_hours_left,
+)
 from src.scanners import _active_hours_from_timestamps, _today_boundaries
 
 
 # ── normalize_reset ──────────────────────────────────────
+
+class TestParseHoursLeft:
+    def test_relative_session_reset(self):
+        assert parse_hours_left("in 4 hr 52 min") == 4.9
+
+
+class TestClaudeSessionReset:
+    def test_past_time_only_is_unknown_not_tomorrow(self):
+        now = datetime(2026, 7, 5, 14, 29)
+
+        assert parse_claude_session_hours_left("2:20pm", now=now) is None
+        assert normalize_claude_session_reset("2:20pm", now=now) is None
+
+    def test_relative_reset_is_preserved_and_counted(self):
+        assert parse_claude_session_hours_left("in 4 hr 52 min") == 4.9
+        assert normalize_claude_session_reset("in 4 hr 52 min") == "in 4 hr 52 min"
+
+    def test_future_time_only_inside_rolling_window_is_absolute(self):
+        now = datetime(2026, 7, 5, 14, 29)
+
+        assert parse_claude_session_hours_left("7:19pm", now=now) == 4.8
+        assert normalize_claude_session_reset("7:19pm", now=now) == "Jul 5 7:19 PM"
+
 
 class TestNormalizeReset:
     def test_none(self):
@@ -40,6 +69,9 @@ class TestNormalizeReset:
         result = normalize_reset("Apr 7 at 12am")
         assert result is not None
         assert "12:00 AM" in result
+
+    def test_weekly_absolute_at_format_still_normalizes(self):
+        assert normalize_reset("Jul 6 at 5:59pm") == "Jul 6 5:59 PM"
 
 
 # ── compute_risk_outlook ─────────────────────────────────

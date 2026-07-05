@@ -84,6 +84,132 @@ def _first_present(raw: dict, *keys: str):
     return None
 
 
+CLAUDE_SESSION_RESET_MAX_HOURS = 6
+
+
+def _relative_hours_left(reset_str: str | None) -> float | None:
+    if not reset_str:
+        return None
+    h = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b", reset_str, re.IGNORECASE)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b", reset_str, re.IGNORECASE)
+    if h or m:
+        hours = float(h.group(1)) if h else 0.0
+        minutes = float(m.group(1)) if m else 0.0
+        return round(hours + minutes / 60, 1)
+    return None
+
+
+def parse_hours_left(reset_str: str | None) -> float | None:
+    """Parse a reset string into hours remaining for generic quota windows."""
+    relative = _relative_hours_left(reset_str)
+    if relative is not None:
+        return relative
+    if not reset_str:
+        return None
+
+    cleaned = reset_str.strip()
+    now = datetime.now()
+    for fmt in ["%I%p", "%I:%M%p", "%I:%M %p", "%I %p"]:
+        try:
+            t = datetime.strptime(cleaned.lower(), fmt)
+        except ValueError:
+            continue
+        t = t.replace(year=now.year, month=now.month, day=now.day)
+        if t <= now:
+            t += timedelta(days=1)
+        return round((t - now).total_seconds() / 3600, 1)
+
+    for fmt in [
+        "%b %d %I:%M %p",
+        "%b %d %I:%M%p",
+        "%b %d at %I:%M%p",
+        "%b %d at %I%p",
+        "%b %d at %I:%M %p",
+        "%b %d, %Y %I:%M %p",
+    ]:
+        for candidate in (cleaned, cleaned.lower()):
+            try:
+                t = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            if t.year == 1900:
+                t = t.replace(year=now.year)
+            delta = (t - now).total_seconds() / 3600
+            if delta > 0:
+                return round(delta, 1)
+    return None
+
+
+def _claude_session_reset_datetime(reset_str: str, now: datetime) -> datetime | None:
+    cleaned = reset_str.strip()
+    time_only_fmts = ["%I%p", "%I:%M%p", "%I:%M %p", "%I %p"]
+    absolute_fmts = [
+        "%b %d %I:%M %p",
+        "%b %d %I:%M%p",
+        "%b %d at %I:%M%p",
+        "%b %d at %I%p",
+        "%b %d at %I:%M %p",
+        "%b %d, %Y %I:%M %p",
+    ]
+
+    for fmt in absolute_fmts:
+        for candidate in (cleaned, cleaned.lower()):
+            try:
+                t = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            if t.year == 1900:
+                t = t.replace(year=now.year)
+            delta = (t - now).total_seconds() / 3600
+            if 0 < delta <= CLAUDE_SESSION_RESET_MAX_HOURS:
+                return t
+            return None
+
+    for fmt in time_only_fmts:
+        try:
+            t = datetime.strptime(cleaned.lower(), fmt)
+        except ValueError:
+            continue
+        t = t.replace(year=now.year, month=now.month, day=now.day)
+        if t <= now:
+            t += timedelta(days=1)
+        delta = (t - now).total_seconds() / 3600
+        if 0 < delta <= CLAUDE_SESSION_RESET_MAX_HOURS:
+            return t
+        return None
+    return None
+
+
+def parse_claude_session_hours_left(reset_str: str | None, now: datetime | None = None) -> float | None:
+    """Parse Claude's rolling five-hour session reset into hours remaining."""
+    relative = _relative_hours_left(reset_str)
+    if relative is not None:
+        return relative
+    if not reset_str:
+        return None
+
+    now = now or datetime.now()
+    reset_at = _claude_session_reset_datetime(reset_str, now)
+    if reset_at is None:
+        return None
+    return round((reset_at - now).total_seconds() / 3600, 1)
+
+
+def normalize_claude_session_reset(reset_str: str | None, now: datetime | None = None) -> str | None:
+    """Normalize Claude's rolling five-hour reset without inventing tomorrow."""
+    if not reset_str:
+        return reset_str
+    cleaned = reset_str.strip()
+    if _relative_hours_left(cleaned) is not None:
+        return cleaned
+
+    now = now or datetime.now()
+    reset_at = _claude_session_reset_datetime(cleaned, now)
+    if reset_at is None:
+        return None
+    return reset_at.strftime("%b %-d %-I:%M %p")
+
+
 def normalize_reset(s: str | None) -> str | None:
     """Normalize reset strings to consistent 'Apr 6 1:00 AM' format."""
     if not s:
@@ -601,6 +727,7 @@ def stats(_auth: None = Depends(verify_auth)) -> dict:
         cc_tokens.get("cache_create_tokens", 0),
     )
 
+    cc_session_left = parse_claude_session_hours_left(sample["session_reset"])
     if codex_quota.get("session_reset"):
         codex_quota["session_reset"] = normalize_reset(codex_quota["session_reset"])
     if codex_quota.get("weekly_reset"):
@@ -622,7 +749,7 @@ def stats(_auth: None = Depends(verify_auth)) -> dict:
         "weekly_design_used_pct": sample.get("weekly_design_pct"),
         "session_remaining_pct": 100 - sample["session"] if sample["session"] is not None else None,
         "weekly_remaining_pct": 100 - sample["weekly"] if sample["weekly"] is not None else None,
-        "session_reset": normalize_reset(sample["session_reset"]),
+        "session_reset": normalize_claude_session_reset(sample["session_reset"]),
         "weekly_reset": normalize_reset(sample["weekly_reset"]),
         "age_seconds": quota_age,
         "is_stale": quota_stale,
@@ -677,6 +804,7 @@ def stats(_auth: None = Depends(verify_auth)) -> dict:
         "codex_quota": codex_quota,
         "codex_analytics_summary": _codex_analytics_summary(),
         "cursor": _remote_cc.get("cursor_usage") if fresh else None,
+        "cc_session_hours_left": cc_session_left,
     }
     _stats_cache = result
     _stats_cache_ts = time.time()
